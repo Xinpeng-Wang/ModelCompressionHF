@@ -388,14 +388,20 @@ class BertSelfAttention(nn.Module):
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
-    def forward(self, hidden_states, attention_mask, output_att=False):
+    def forward(self, hidden_states, attention_mask, output_att=False, output_val=False):
         mixed_query_layer = self.query(hidden_states)
         mixed_key_layer = self.key(hidden_states)
         mixed_value_layer = self.value(hidden_states)
+        # mixed_value_layer 4, 128, 312
 
         query_layer = self.transpose_for_scores(mixed_query_layer)
         key_layer = self.transpose_for_scores(mixed_key_layer)
+        # value_layer: 4, 12, 128, 26
+        # TODO: 把value_layer 变成 4x12, 128, 26, 送出来
         value_layer = self.transpose_for_scores(mixed_value_layer)
+        length = value_layer.size()[2]
+        hidden_size = value_layer.size()[3]
+        value_out = value_layer.reshape(-1, length, hidden_size)
 
         # Take the dot product between "query" and "key" to get the raw attention scores.
         attention_scores = torch.matmul(
@@ -417,7 +423,10 @@ class BertSelfAttention(nn.Module):
         new_context_layer_shape = context_layer.size()[
             :-2] + (self.all_head_size,)
         context_layer = context_layer.view(*new_context_layer_shape)
-        return context_layer, attention_scores
+        if not output_val: 
+            return context_layer, attention_scores
+        if output_val:
+            return context_layer, (attention_scores, value_out)
 
 
 class BertAttention(nn.Module):
@@ -427,8 +436,8 @@ class BertAttention(nn.Module):
         self.self = BertSelfAttention(config)
         self.output = BertSelfOutput(config)
 
-    def forward(self, input_tensor, attention_mask):
-        self_output, layer_att = self.self(input_tensor, attention_mask)
+    def forward(self, input_tensor, attention_mask, output_val=False):
+        self_output, layer_att = self.self(input_tensor, attention_mask, output_val=output_val)
         attention_output = self.output(self_output, input_tensor)
         return attention_output, layer_att
 
@@ -491,9 +500,9 @@ class BertLayer(nn.Module):
         self.intermediate = BertIntermediate(config)
         self.output = BertOutput(config)
 
-    def forward(self, hidden_states, attention_mask):
+    def forward(self, hidden_states, attention_mask, output_val=False):
         attention_output, layer_att = self.attention(
-            hidden_states, attention_mask)
+            hidden_states, attention_mask, output_val)
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
 
@@ -506,13 +515,13 @@ class BertEncoder(nn.Module):
         self.layer = nn.ModuleList([BertLayer(config)
                                     for _ in range(config.num_hidden_layers)])
 
-    def forward(self, hidden_states, attention_mask):
+    def forward(self, hidden_states, attention_mask, output_val=False):
         all_encoder_layers = []
         all_encoder_atts = []
         for _, layer_module in enumerate(self.layer):
             all_encoder_layers.append(hidden_states)
             hidden_states, layer_att = layer_module(
-                hidden_states, attention_mask)
+                hidden_states, attention_mask, output_val)
             all_encoder_atts.append(layer_att)
 
         all_encoder_layers.append(hidden_states)
@@ -806,7 +815,7 @@ class BertModel(BertPreTrainedModel):
         self.apply(self.init_bert_weights)
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None,
-                output_all_encoded_layers=True, output_att=True):
+                output_all_encoded_layers=True, output_att=True, output_val=False):
 
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
@@ -831,7 +840,7 @@ class BertModel(BertPreTrainedModel):
 
         embedding_output = self.embeddings(input_ids, token_type_ids)
         encoded_layers, layer_atts = self.encoder(embedding_output,
-                                                  extended_attention_mask)
+                                                  extended_attention_mask, output_val)
 
         pooled_output = self.pooler(encoded_layers)
         if not output_all_encoded_layers:
@@ -937,9 +946,9 @@ class TinyBertForPreTraining(BertPreTrainedModel):
 
     def forward(self, input_ids, token_type_ids=None,
                 attention_mask=None, masked_lm_labels=None,
-                next_sentence_label=None, labels=None):
+                next_sentence_label=None, labels=None, output_val=False):
         sequence_output, att_output, pooled_output = self.bert(
-            input_ids, token_type_ids, attention_mask)
+            input_ids, token_type_ids, attention_mask, output_val=output_val)
         tmp = []
         for s_id, sequence_layer in enumerate(sequence_output):
             tmp.append(self.fit_dense(sequence_layer))
