@@ -43,7 +43,7 @@ from transformer.optimization import BertAdam
 from transformer.file_utils import WEIGHTS_NAME, CONFIG_NAME
 from clearml import Task, Logger
 import argparse
-from methods.feature_distill import att_mse_hidden_mse, att_kl
+from methods.feature_distill import att_mse_hidden_mse, att_kl, att_kl_4_from_6
 
 
 
@@ -761,6 +761,15 @@ def main():
     parser.add_argument('--feature_learn',
                         type=str,
                         default='att_mse_hidden_mse')
+    parser.add_argument('--two_stage_index',
+                        type=int,
+                        default=None,
+                        required=False
+                        )
+    parser.add_argument('--layer_selection',
+                        type=int,
+                        default=None
+                        )
 
     args = parser.parse_args()
     logger.info('The args: {}'.format(args))
@@ -983,19 +992,19 @@ def main():
                     #     tmp_loss = loss_mse(student_rep, teacher_rep)
                     #     rep_loss += tmp_loss
                     if args.feature_learn == 'att_mse_hidden_mse':
-                        rep_loss, att_loss = att_mse_hidden_mse(student_atts, teacher_atts, student_reps, teacher_reps)
+                        rep_loss, att_loss = att_mse_hidden_mse(student_atts, teacher_atts, student_reps, teacher_reps, device)
                     
                     if args.feature_learn == 'att_kl':
                         rep_loss, att_loss = att_kl(student_atts, teacher_atts)
-                        
-                    
+                    if args.feature_learn == 'att_kl_4from6':
+                        rep_loss, att_loss = att_kl_4_from_6(student_atts, teacher_atts, args.layer_selection)
                     loss = rep_loss + att_loss
                     tr_att_loss += att_loss.item()
                     tr_rep_loss += rep_loss.item()
 
-                    clearml_logger.report_scalar("loss", "loss", iteration=nb_tr_steps ,value=loss)
-                    clearml_logger.report_scalar("loss", "loss_attn", iteration=nb_tr_steps ,value=att_loss)
-                    clearml_logger.report_scalar("loss", "loss_rep", iteration=nb_tr_steps ,value=rep_loss)
+                    clearml_logger.report_scalar("loss", "loss", iteration=global_step ,value=loss)
+                    clearml_logger.report_scalar("loss", "loss_attn", iteration=global_step ,value=att_loss)
+                    clearml_logger.report_scalar("loss", "loss_rep", iteration=global_step ,value=rep_loss)
 
 
                 else:
@@ -1010,7 +1019,7 @@ def main():
                     loss = cls_loss
                     tr_cls_loss += cls_loss.item()
 
-                    clearml_logger.report_scalar("loss", "loss_ce", iteration=nb_tr_steps ,value=cls_loss )
+                    clearml_logger.report_scalar("loss", "loss_ce", iteration=global_step ,value=cls_loss )
 
 
                 if n_gpu > 1:
@@ -1054,24 +1063,24 @@ def main():
                         result = do_eval(student_model, task_name, eval_dataloader,
                                          device, output_mode, eval_labels, num_labels)
                         
-                        clearml_logger.report_scalar("loss", "eval: loss", iteration=nb_tr_steps ,value=result['eval_loss'])
+                        clearml_logger.report_scalar("loss", "valid: loss", iteration=global_step ,value=result['eval_loss'])
 
                         if task_name == "cola":
-                            clearml_logger.report_scalar("mcc", "eval: mcc", iteration=nb_tr_steps ,value=result['mcc'])
+                            clearml_logger.report_scalar("mcc", "valid: mcc", iteration=global_step ,value=result['mcc'])
 
                         # clearml_logger.report_scalar("acc", "eval: acc", iteration=step, value=result['acc'])
                         elif task_name == "mrpc" or task_name == "qqp":
-                            clearml_logger.report_scalar("acc", "eval: acc", iteration=nb_tr_steps ,value=result['acc'])
-                            clearml_logger.report_scalar("f1", "eval: f1", iteration=nb_tr_steps ,value=result['f1'])
-                            clearml_logger.report_scalar("acc_and_f1", "eval: acc", iteration=nb_tr_steps ,value=result['acc_and_f1'])
+                            clearml_logger.report_scalar("accuracy", "valid: accuracy", iteration=global_step ,value=result['acc'])
+                            clearml_logger.report_scalar("f1", "valid: f1", iteration=global_step ,value=result['f1'])
+                            clearml_logger.report_scalar("acc_and_f1", "valid: acc_and_f1", iteration=global_step ,value=result['acc_and_f1'])
 
                         elif task_name == "sts-b":
-                            clearml_logger.report_scalar("pearson", "eval: pearson", iteration=nb_tr_steps ,value=result['pearson'])
-                            clearml_logger.report_scalar("spearmanr", "eval: spearmanr", iteration=nb_tr_steps ,value=result['spearmanr'])
-                            clearml_logger.report_scalar("corr", "eval: corr", iteration=nb_tr_steps ,value=result['corr'])
+                            clearml_logger.report_scalar("pearson", "valid: pearson", iteration=global_step ,value=result['pearson'])
+                            clearml_logger.report_scalar("spearmanr", "valid: spearmanr", iteration=global_step ,value=result['spearmanr'])
+                            clearml_logger.report_scalar("corr", "valid: corr", iteration=global_step ,value=result['corr'])
 
                         else:
-                            clearml_logger.report_scalar("acc", "eval: acc", iteration=nb_tr_steps ,value=result['acc'])
+                            clearml_logger.report_scalar("accuracy", "valid: accuracy", iteration=global_step ,value=result['acc'])
 
 
 
@@ -1081,10 +1090,10 @@ def main():
                     result['rep_loss'] = rep_loss
                     result['loss'] = loss
 
-                    clearml_logger.report_scalar("loss", "train: loss", iteration=nb_tr_steps ,value=loss)
-                    clearml_logger.report_scalar("loss", "train: loss_attn", iteration=nb_tr_steps ,value=att_loss)
-                    clearml_logger.report_scalar("loss", "train: loss_rep", iteration=nb_tr_steps ,value=rep_loss)
-                    clearml_logger.report_scalar("loss", "train: loss_ce", iteration=nb_tr_steps ,value=cls_loss)
+                    clearml_logger.report_scalar("loss", "train: loss", iteration=global_step ,value=loss)
+                    clearml_logger.report_scalar("loss", "train: loss_attn", iteration=global_step ,value=att_loss)
+                    clearml_logger.report_scalar("loss", "train: loss_rep", iteration=global_step ,value=rep_loss)
+                    clearml_logger.report_scalar("loss", "train: loss_ce", iteration=global_step ,value=cls_loss)
 
                     result_to_file(result, output_eval_file)
 
@@ -1095,18 +1104,18 @@ def main():
 
                         if task_name in acc_tasks and result['acc'] > best_dev_acc:
                             best_dev_acc = result['acc']
-                            clearml_logger.report_scalar("best_acc", "eval: best_acc", iteration=nb_tr_steps ,value=best_dev_acc)
                             save_model = True
+                            clearml_logger.report_scalar("best_accuracy", "best_accucacy", iteration=global_step ,value=best_dev_acc)
 
                         if task_name in corr_tasks and result['corr'] > best_dev_acc:
                             best_dev_acc = result['corr']
-                            clearml_logger.report_scalar("best_corr", "eval: best_corr", iteration=nb_tr_steps ,value=best_dev_acc)
                             save_model = True
+                            clearml_logger.report_scalar("best_corr", "eval: best_corr", iteration=global_step ,value=best_dev_acc)
 
                         if task_name in mcc_tasks and result['mcc'] > best_dev_acc:
                             best_dev_acc = result['mcc']
-                            clearml_logger.report_scalar("best_mcc", "eval: best_mcc", iteration=nb_tr_steps ,value=best_dev_acc)
                             save_model = True
+                            clearml_logger.report_scalar("best_mcc", "eval: best_mcc", iteration=global_step ,value=best_dev_acc)
 
                     if save_model:
                         logger.info("***** Save model *****")
