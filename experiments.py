@@ -10,7 +10,7 @@ from ruamel.yaml import YAML
 from pathlib import Path
 from datetime import datetime
 from clearml import Task
-
+import logging
 
 # Task.set_credentials(
 #      api_host="https://api.community.clear.ml", 
@@ -27,6 +27,18 @@ from clearml import Task
 #         cfg = yaml.safe_load(f)
 
 #     return cfg
+log_format = '%(asctime)s %(message)s'
+logging.basicConfig(stream=sys.stdout, level=logging.INFO,
+                    format=log_format, datefmt='%m/%d %I:%M:%S %p')
+fh = logging.FileHandler('debug_layer_loss.log')
+fh.setFormatter(logging.Formatter(log_format))
+logging.getLogger().addHandler(fh)
+logger = logging.getLogger()
+
+
+
+
+
 yaml = YAML(typ='rt')
 yaml.preserve_quotes = True
 
@@ -50,34 +62,39 @@ cur_gpu = 0
                     
 # ]
 
-config_inter_1 = {"--run-name": "qnli_tiny_bert_noDA", 
-        "--teacher_model": "models/teachers-finetuned/qnli",
-        "--student_model":" models/students/TinyBERT_General_6L_768D", 
+config_inter_1 = {
+        "--run-name": "qnli_distill_no_aug_att_kl_inter_4layer_from_Tiny6", 
+        "--feature_learn": "att_kl_4from6",
+        "--teacher_model": "runs/05_04_2022_23:18",
+        "--student_model":" models/students/TinyBERT_General_4L_312D", 
         "--data_dir": "/content/drive/MyDrive/keep/datasets/glue_data/QNLI",
+        # "--data_dir": "data_toy/QNLI",
         "--task_name": "qnli",
         # "--output_dir": "models/students/qnli",
         "--max_seq_length": 128,
         "--train_batch_size": 32,
         "--num_train_epochs": 10,
-        "--run-name": "qnli_distill_no_aug_tiny",
-        "--do_lower_case": None
+        "--do_lower_case": None,
+        "--two_stage_index": 1,
+        "--layer_selection": 1234
         }
 
 config_pre_1 = {
+        "--run-name": "qnli_distill_no_aug_att_kl_pre_4layer_from_Tiny6",
         "--pred_distill": None, 
-         "--run-name": "qnli_tiny_bert_noDA", 
-        "--teacher_model": "models/teachers-finetuned/qnli",
-        "--student_model":" models/students/qnli", 
+        "--teacher_model": "runs/05_04_2022_23:18",
+        "--student_model":" runs/05_03_2022_18:22", 
         "--data_dir": "/content/drive/MyDrive/keep/datasets/glue_data/QNLI",
+        # "--data_dir": "data_toy/QNLI",
         "--task_name": "qnli",
         # "--output_dir": "models/students/qnli",
         "--max_seq_length": 128,
         "--train_batch_size": 32,
-        "--num_train_epochs": 3,
-        "--run-name": "qnli_distill_no_aug_tiny",
+        "--num_train_epochs": 10,
         "--do_lower_case": None,
         "--learning_rate": 3e-5,
-        "--eval_step": 100
+        "--eval_step": 100,
+        "--two_stage_index": 1
 
 }
 
@@ -86,7 +103,10 @@ config_pre_1 = {
 
 
 
-config_list_1 = [config_pre_1] #, 'config/task_distill.yaml']
+config_list_inter = [config_inter_1] #, 'config/task_distill.yaml']
+
+
+config_list_pre = [config_pre_1] #, 'config/task_distill.yaml']
 
 
 
@@ -99,8 +119,8 @@ file_to_restore = {}
 
 
 
-if len(config_list_1) > 0 :
-    for config in config_list_1:
+if len(config_list_inter) > 0 :
+    for config in config_list_inter:
         cmd = 'PYTHONPATH=/content/TinyBERT python task_distill.py ' #% PROJECT_FOLDER
 
         if type(config) is str:
@@ -116,6 +136,10 @@ if len(config_list_1) > 0 :
 
         config['--output_dir'] = log_path
         config['--run-name'] += '_' + current_time
+        # save the feature layer distilled student path for prediction layer distillation
+        file_to_restore[config['--two_stage_index']] = log_path
+
+
 
         options = []
         for k, v in config.items():   
@@ -134,36 +158,35 @@ if len(config_list_1) > 0 :
         yaml.dump(config, Path(config_save_path))
 
 
-# if len(config_path_list_2) > 0 :
-#     for config_path in config_path_list_2:
-#         cmd = 'CUDA_VISIBLE_DEVICES=0 python %s/train.py ' % PROJECT_FOLDER
+if len(config_list_pre) > 0 :
+    for config in config_list_pre:
+        cmd = 'PYTHONPATH=/content/TinyBERT python task_distill.py ' # % PROJECT_FOLDER
 
-#         config  = yaml.load(Path(config_path)) 
-#         DATA_PATH = ' ' + config['data_path'] + ' '
-
-#         now = datetime.now()
-#         current_time = now.strftime("%m_%d_%Y_%R")
-#         log_path = f"checkpoints/runs/{current_time}"
-
+        if type(config) is str:
+            config  = yaml.load(Path(config)) 
+        now = datetime.now()
+        current_time = now.strftime("%m_%d_%Y_%R")
+        log_path = f"runs/{current_time}"
 
 
 
-#         config['args']['--save-dir'] = log_path
-#         config['args']['--tensorboard-logdir'] = log_path
-#         config['args']['--run-name'] += '_' + current_time
 
-#         cmd += DATA_PATH
-#         options = []
-#         for k, v in config['args'].items():   
-#             if v is not None:
-#                 options += [ f'{k} {v}']  
-#             else: options += [ f'{k}']
+        config['--output_dir'] = log_path
+        config['--run-name'] += '_' + current_time
+        if '--two_stage_index' in config.keys():
+            config['--student_model'] = file_to_restore[config['--two_stage_index']]
+
+        options = []
+        for k, v in config.items():   
+            if v is not None:
+                options += [ f'{k} {v}']  
+            else: options += [ f'{k}']
 
 
 
-#         cmd += ' '.join(options)
+        cmd += ' '.join(options)
 
-#         os.mkdir(log_path)
-#         config_save_path = log_path + '/config.yaml'
-#         yaml.dump(config, Path(config_save_path))
-#         os.system(cmd)
+       
+        os.system(cmd)
+        config_save_path = log_path + '/config.yaml'
+        yaml.dump(config, Path(config_save_path))
