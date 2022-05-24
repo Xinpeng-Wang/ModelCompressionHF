@@ -41,6 +41,18 @@ from transformer.file_utils import WEIGHTS_NAME, CONFIG_NAME
 from transformer.modeling import TinyBertForPreTraining, BertModel
 from transformer.tokenization import BertTokenizer
 from transformer.optimization import BertAdam
+from methods.feature_distill import att_mse_hidden_mse, att_val_kl
+from clearml import Task, Logger
+
+
+parser = argparse.ArgumentParser(add_help=False)
+parser.add_argument('--run-name')
+args, _ = parser.parse_known_args()
+run_name = vars(args)['run_name']
+
+task = Task.init(project_name='master thesis/general distill', task_name=run_name)
+clearml_logger = task.get_logger()
+
 
 csv.field_size_limit(sys.maxsize)
 
@@ -268,6 +280,11 @@ def main():
     parser.add_argument('--data_url',
                         type=str,
                         default="")
+    
+    parser.add_argument(
+        '--feature_learn',
+        type=str,
+    )
 
     args = parser.parse_args()
     logger.info('args:{}'.format(args))
@@ -397,6 +414,7 @@ def main():
         tr_loss = 0.
         tr_att_loss = 0.
         tr_rep_loss = 0.
+        tr_val_loss = 0.
         student_model.train()
         nb_tr_examples, nb_tr_steps = 0, 0
         with tqdm(total=len(train_dataloader), desc="Epoch {}".format(epoch)) as pbar:
@@ -406,36 +424,53 @@ def main():
                 input_ids, input_mask, segment_ids, lm_label_ids, is_next = batch
                 if input_ids.size()[0] != args.train_batch_size:
                     continue
+                
+                
 
-                att_loss = 0.
-                rep_loss = 0.
 
-                student_atts, student_reps = student_model(input_ids, segment_ids, input_mask)
-                teacher_reps, teacher_atts, _ = teacher_model(input_ids, segment_ids, input_mask)
-                teacher_reps = [teacher_rep.detach() for teacher_rep in teacher_reps]  # speedup 1.5x
-                teacher_atts = [teacher_att.detach() for teacher_att in teacher_atts]
+                # att_loss = 0.
+                # rep_loss = 0.
 
-                teacher_layer_num = len(teacher_atts)
-                student_layer_num = len(student_atts)
-                assert teacher_layer_num % student_layer_num == 0
-                layers_per_block = int(teacher_layer_num / student_layer_num)
-                new_teacher_atts = [teacher_atts[i * layers_per_block + layers_per_block - 1]
-                                    for i in range(student_layer_num)]
+                
 
-                for student_att, teacher_att in zip(student_atts, new_teacher_atts):
-                    student_att = torch.where(student_att <= -1e2, torch.zeros_like(student_att).to(device),
-                                              student_att)
-                    teacher_att = torch.where(teacher_att <= -1e2, torch.zeros_like(teacher_att).to(device),
-                                              teacher_att)
-                    att_loss += loss_mse(student_att, teacher_att)
+                # teacher_layer_num = len(teacher_atts)
+                # student_layer_num = len(student_atts)
+                # assert teacher_layer_num % student_layer_num == 0
+                # layers_per_block = int(teacher_layer_num / student_layer_num)
+                # new_teacher_atts = [teacher_atts[i * layers_per_block + layers_per_block - 1]
+                #                     for i in range(student_layer_num)]
 
-                new_teacher_reps = [teacher_reps[i * layers_per_block] for i in range(student_layer_num + 1)]
-                new_student_reps = student_reps
+                # for student_att, teacher_att in zip(student_atts, new_teacher_atts):
+                #     student_att = torch.where(student_att <= -1e2, torch.zeros_like(student_att).to(device),
+                #                               student_att)
+                #     teacher_att = torch.where(teacher_att <= -1e2, torch.zeros_like(teacher_att).to(device),
+                #                               teacher_att)
+                #     att_loss += loss_mse(student_att, teacher_att)
 
-                for student_rep, teacher_rep in zip(new_student_reps, new_teacher_reps):
-                    rep_loss += loss_mse(student_rep, teacher_rep)
+                # new_teacher_reps = [teacher_reps[i * layers_per_block] for i in range(student_layer_num + 1)]
+                # new_student_reps = student_reps
 
-                loss = att_loss + rep_loss
+                # for student_rep, teacher_rep in zip(new_student_reps, new_teacher_reps):
+                #     rep_loss += loss_mse(student_rep, teacher_rep)
+                value_loss = None
+                if args.feature_learn == 'attn_mse_hidden_mse':
+                    student_atts, student_reps = student_model(input_ids, segment_ids, input_mask)
+                    teacher_reps, teacher_atts, _ = teacher_model(input_ids, segment_ids, input_mask)
+                    teacher_reps = [teacher_rep.detach() for teacher_rep in teacher_reps]  # speedup 1.5x
+                    teacher_atts = [teacher_att.detach() for teacher_att in teacher_atts]
+                    rep_loss, att_loss = att_mse_hidden_mse(student_atts, teacher_atts, student_reps, teacher_reps, device)
+                    loss = att_loss + rep_loss
+                if args.feature_learn == 'attn_kl_val_kl':
+                    rep_loss = torch.tensor(0.)
+                    student_atts_val, student_reps = student_model(input_ids, segment_ids, input_mask, output_val=True)
+                    teacher_reps, teacher_atts_val, _ = teacher_model(input_ids, segment_ids, input_mask, output_val=True)
+                    att_loss, value_loss = att_val_kl(student_atts_val, teacher_atts_val, device)
+                    loss = att_loss + rep_loss + value_loss
+
+
+                clearml_logger.report_scalar("loss", "loss", iteration=global_step ,value=loss)
+                clearml_logger.report_scalar("loss", "loss_attn", iteration=global_step ,value=att_loss)
+                clearml_logger.report_scalar("loss", "loss_rep", iteration=global_step ,value=rep_loss)
 
                 if n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
@@ -449,6 +484,11 @@ def main():
 
                 tr_att_loss += att_loss.item()
                 tr_rep_loss += rep_loss.item()
+                if value_loss is not None:
+                    tr_val_loss += value_loss.item()
+                    clearml_logger.report_scalar("loss", "loss_value", iteration=global_step ,value=value_loss)
+
+
 
                 tr_loss += loss.item()
                 nb_tr_examples += input_ids.size(0)
@@ -458,6 +498,8 @@ def main():
                 mean_loss = tr_loss * args.gradient_accumulation_steps / nb_tr_steps
                 mean_att_loss = tr_att_loss * args.gradient_accumulation_steps / nb_tr_steps
                 mean_rep_loss = tr_rep_loss * args.gradient_accumulation_steps / nb_tr_steps
+                if tr_val_loss > 0:
+                    mean_val_loss = tr_val_loss * args.gradient_accumulation_steps / nb_tr_steps
 
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     optimizer.step()
@@ -470,6 +512,8 @@ def main():
                         result['loss'] = mean_loss
                         result['att_loss'] = mean_att_loss
                         result['rep_loss'] = mean_rep_loss
+                        if tr_val_loss > 0:
+                            result['val_loss'] = mean_val_loss
                         output_eval_file = os.path.join(args.output_dir, "log.txt")
                         with open(output_eval_file, "a") as writer:
                             logger.info("***** Eval results *****")
