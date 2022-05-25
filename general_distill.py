@@ -133,7 +133,9 @@ class PregeneratedDataset(Dataset):
         self.working_dir = None
         if reduce_memory:
             self.temp_dir = TemporaryDirectory()
-            self.working_dir = Path('/cache')
+            # import pdb; pdb.set_trace() 
+            # self.working_dir = Path('/cache'
+            self.working_dir = Path(self.temp_dir.name)
             input_ids = np.memmap(filename=self.working_dir/'input_ids.memmap',
                                   mode='w+', dtype=np.int32, shape=(num_samples, seq_len))
             input_masks = np.memmap(filename=self.working_dir/'input_masks.memmap',
