@@ -1,6 +1,3 @@
-
-
-
 Installation
 ============
 Run command below to install the environment(**using python3**)
@@ -8,9 +5,24 @@ Run command below to install the environment(**using python3**)
 pip install -r requirements.txt
 ```
 
+Teacher Model
+=============
+Download Hugging Face bert-base-uncased model as teacher to **BERT_BASE_DIR**
+
+```
+git lfs install
+git clone https://huggingface.co/bert-base-uncased
+```
+
+Corpus
+=======
+Raw english wikipedia and bookcorpus dataset can be downloaded via this [link](https://drive.google.com/drive/folders/1kzQKL9LQxgmsOBlKWVNI_gixY4uYdPGl?usp=sharing).
+
+
+
+
 General Distillation
 ====================
-In general distillation, we use the original BERT-base without fine-tuning as the teacher and a large-scale text corpus as the learning data. By performing the Transformer distillation on the text from general domain, we obtain a general TinyBERT which provides a good initialization for the task-specific distillation. 
 
 General distillation has two steps: (1) generate the corpus of json format; (2) run the transformer distillation;
 
