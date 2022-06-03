@@ -50,6 +50,15 @@ parser.add_argument('--run-name')
 args, _ = parser.parse_known_args()
 run_name = vars(args)['run_name']
 
+Task.set_credentials(
+     api_host="http://35.223.63.40:8008", 
+     web_host="http://35.223.63.40:8080", 
+     files_host="http://35.223.63.40:8081", 
+     key='VJ9XKRTX42WZQG6NRFG6', 
+     secret='vvugyeM2Jd7AWCkONYpZdB7f25kbwczqbClrjTh1Sei0Fpinu9'
+)
+
+
 task = Task.init(project_name='master thesis/general distill', task_name=run_name)
 clearml_logger = task.get_logger()
 
