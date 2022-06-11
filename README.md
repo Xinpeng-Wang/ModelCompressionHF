@@ -31,26 +31,30 @@ Step 1: use `pregenerate_training_data.py` to produce the corpus of json format
 
 ```
  
-# ${BERT_BASE_DIR}$ includes the BERT-base teacher model.
+# BERT_BASE_DIR includes the BERT-base teacher model.
  
-python pregenerate_training_data.py --train_corpus ${CORPUS_RAW} \ 
-                  --bert_model ${BERT_BASE_DIR}$ \
-                  --reduce_memory --do_lower_case \
-                  --epochs_to_generate 3 \
-                  --output_dir ${CORPUS_JSON_DIR}$ 
+python pregenerate_training_data.py --train_corpus $CORPUS_RAW
+                  --bert_model $BERT_BASE_DIR
+                  --reduce_memory --do_lower_case
+                  --epochs_to_generate 3
+                  --output_dir $CORPUS_JSON_DIR
                              
 ```
 
 Step 2: use `general_distill.py` to run the general distillation
-```
- # ${STUDENT_CONFIG_DIR}$ includes the config file of student_model.
+
  
-python general_distill.py --pregenerated_data ${CORPUS_JSON}$ \ 
-                          --teacher_model ${BERT_BASE}$ \
-                          --student_model ${STUDENT_CONFIG_DIR}$ \
-                          --reduce_memory --do_lower_case \
-                          --train_batch_size 256 \
-                          --output_dir ${GENERAL_TINYBERT_DIR}$ 
+ DISTILLATION_METHOD can be chosen from  `{attn_mse_hidden_mse, attn_kl_val_kl}`  for distillation with different methods.
+```
+# STUDENT_CONFIG_DIR includes the config file of student_model.
+
+python general_distill.py --pregenerated_data $CORPUS_JSON 
+                          --teacher_model $BERT_BASE
+                          --student_model $STUDENT_CONFIG_DIR
+                          --reduce_memory --do_lower_case
+                          --train_batch_size 256
+                          --output_dir $GENERAL_TINYBERT_DIR
+                          --feature_learn $DISTTILATION_METHOD
 ```
 
 

@@ -18,4 +18,8 @@ __pycache__/
 
 data/
 
+
 tmp/
+
+env/
+
