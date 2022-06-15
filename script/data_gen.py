@@ -13,7 +13,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import os
+os.chdir('/mounts/Users/student/xinpeng/ModelCompressionHF')
 import json
 import collections
 import logging
@@ -366,7 +367,7 @@ def generate(args, train_corpus, split):
 
 def main():
     parser = ArgumentParser()
-    parser.add_argument('--train_corpus', type=Path, required=True)
+    # parser.add_argument('--train_corpus', type=Path, required=True)
     parser.add_argument("--output_dir", type=Path, required=True)
     parser.add_argument("--bert_model", type=str, required=True)
     parser.add_argument("--do_lower_case", action="store_true")
@@ -375,8 +376,8 @@ def main():
     parser.add_argument("--reduce_memory", action="store_true",
                         help="Reduce memory usage for large datasets by keeping data on disc rather than in memory")
 
-    parser.add_argument("--num_workers", type=int, default=1,
-                        help="The number of workers to use to write the files")
+    # parser.add_argument("--num_workers", type=int, default=1,
+    #                     help="The number of workers to use to write the files")
     parser.add_argument("--epochs_to_generate", type=int, default=3,
                         help="Number of epochs of data to pregenerate")
     parser.add_argument("--max_seq_len", type=int, default=128)
