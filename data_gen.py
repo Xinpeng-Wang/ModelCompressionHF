@@ -13,8 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
-os.chdir('/mounts/Users/student/xinpeng/ModelCompressionHF')
+
 import json
 import collections
 import logging
@@ -396,7 +395,7 @@ def main():
     #     raise ValueError("Cannot use multiple workers while reducing memory")
     num_split = 48
     writer_workers = Pool(num_split)
-    corpus_list = [f'/mounts/data/proj/xinpeng/split/wiki_book_{i}.txt' for i in range(num_split)  ]
+    corpus_list = [Path(f'/mounts/data/proj/xinpeng/split/wiki_book_{i}.txt') for i in range(num_split)  ]
     idx_list = [i for i in range(num_split)]
     args_list = [args for i in range(num_split)]
     arguments = list(zip(args_list, corpus_list, idx_list))
