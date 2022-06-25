@@ -761,15 +761,19 @@ def main():
     parser.add_argument('--feature_learn',
                         type=str,
                         default='att_mse_hidden_mse')
-    parser.add_argument('--two_stage_index',
-                        type=int,
-                        default=None,
-                        required=False
-                        )
     parser.add_argument('--layer_selection',
                         type=int,
                         default=None
                         )
+    parser.add_argument('--initialize_from',
+                        type=str,
+                        required=True,
+                        help="whether to initialize the student from fintuned teacher or general distilled student."
+                        )
+    parser.add_argument('--init_path',
+                        type=str,
+                        retuired=False,
+                        help="The path of the weights extracted from teacher for initialization.")
 
     args = parser.parse_args()
     logger.info('The args: {}'.format(args))
@@ -886,8 +890,11 @@ def main():
     if not args.do_eval:
         teacher_model = TinyBertForSequenceClassification.from_pretrained(args.teacher_model, num_labels=num_labels)
         teacher_model.to(device)
-
-    student_model = TinyBertForSequenceClassification.from_pretrained(args.student_model, num_labels=num_labels)
+    if args.initialize_from == 'general_distilled_student' or args.pred_distill is True:
+        student_model = TinyBertForSequenceClassification.from_pretrained(args.student_model, num_labels=num_labels)
+    elif args.initialize_from == 'finetuned_teacher':
+        student_model = TinyBertForSequenceClassification.from_scratch(args.student_model, num_labels=num_labels)
+        student_model.load_state_dict(args.init_path, strict=False)
     student_model.to(device)
     if args.do_eval:
         logger.info("***** Running evaluation *****")
