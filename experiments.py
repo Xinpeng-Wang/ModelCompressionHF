@@ -46,7 +46,7 @@ yaml.preserve_quotes = True
 def run_process(proc):
     os.system(proc)
 
-PROJECT_FOLDER = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROJECT_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
 # all_cmds = collections.defaultdict(list)
 n_gpu = torch.cuda.device_count()
@@ -208,9 +208,9 @@ task_param = {
 
 def train(config, task_type):
     if task_type == 'task_distill':
-        cmd = 'python task_distill.py ' % PROJECT_FOLDER
+        cmd = 'python %s/task_distill.py ' % PROJECT_FOLDER
     elif task_type == 'general_distill':
-        cmd = 'python general_distill.py ' % PROJECT_FOLDER
+        cmd = 'python %s/general_distill.py ' % PROJECT_FOLDER
     options = []
     for k, v in config.items():   
         if v is not None:
@@ -223,6 +223,7 @@ def train(config, task_type):
 
     os.system(cmd)
     log_path = config['--output_dir']
+    os.mkdir(log_path)
     config_save_path = log_path + '/config.yaml'
     yaml.dump(config, Path(config_save_path))
 
@@ -317,8 +318,11 @@ def task_specific_two_stage_training(task, method, student_layer):
     # config_pred = task_specific_config(config_pred, task, student_layer)
     config_inter['--teacher_model'] = task_param[task]['teacher']
     config_inter['--data_dir'] = task_param[task]['data']
-    
+
 
     # train
     train(config_pred, 'task_distill')
     return
+
+
+task_specific_two_stage_training('qnli', 'attn_kl_val_kl', 6)

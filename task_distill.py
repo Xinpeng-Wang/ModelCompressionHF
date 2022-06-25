@@ -772,7 +772,7 @@ def main():
                         )
     parser.add_argument('--init_path',
                         type=str,
-                        retuired=False,
+                        required=False,
                         help="The path of the weights extracted from teacher for initialization.")
 
     args = parser.parse_args()
