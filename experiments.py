@@ -67,7 +67,7 @@ specific_config_format = {
         "--run-name": "qnli_distill_no_aug_att_kl_inter_4layer_from_Tiny6", 
         "--feature_learn": "att_kl_4from6",
         "--teacher_model": "runs/05_04_2022_23:18",
-        "--student_model":" models/students/TinyBERT_General_4L_312D", 
+        "--student_model":" models/TinyBERT_General_6L_768D", 
         "--data_dir": "/content/drive/MyDrive/keep/datasets/glue_data/QNLI",
         # "--data_dir": "data_toy/QNLI",
         "--task_name": "qnli",
@@ -76,7 +76,6 @@ specific_config_format = {
         "--train_batch_size": 32,
         "--num_train_epochs": 10,
         "--do_lower_case": None,
-        "--two_stage_index": 1,
         "--layer_selection": 1234
         }
 
@@ -97,7 +96,6 @@ specific_config_pre_format = {
         "--do_lower_case": None,
         "--learning_rate": 3e-5,
         "--eval_step": 100,
-        "--two_stage_index": 1
 
 }
 
@@ -287,11 +285,12 @@ def task_specific_two_stage_training(task, method, student_layer):
     log_path_inter = f"runs/{current_time}"
     num_epoch = config_inter['--num_train_epochs']
 
-    config_inter['--teacher_model']
+
     config_inter['--output_dir'] = log_path_inter
     config_inter['--run-name'] = task + '_' + method + '_' + 'inter' + f'{num_epoch}' + 'epoch' + '_' + f'{student_layer}' + 'S' + '_' + current_time
     config_inter['--feature_learn'] = task
     # config_inter = task_specific_config(config_inter, task, student_layer)
+    config_inter['--feature_learn'] = method
     config_inter['--teacher_model'] = task_param[task]['teacher']
     config_inter['--data_dir'] = task_param[task]['data']
     config_inter['--initialize_from'] = 'finetuned_teacher'
