@@ -43,7 +43,7 @@ from transformer.optimization import BertAdam
 from transformer.file_utils import WEIGHTS_NAME, CONFIG_NAME
 from clearml import Task, Logger
 import argparse
-from methods.feature_distill import att_mse_hidden_mse, att_kl, att_kl_4_from_6
+from methods.feature_distill import att_mse_hidden_mse, att_kl, att_kl_4_from_6, att_val_kl
 
 
 
@@ -894,7 +894,7 @@ def main():
         student_model = TinyBertForSequenceClassification.from_pretrained(args.student_model, num_labels=num_labels)
     elif args.initialize_from == 'finetuned_teacher':
         student_model = TinyBertForSequenceClassification.from_scratch(args.student_model, num_labels=num_labels)
-        student_model.load_state_dict(args.init_path, strict=False)
+        student_model.load_state_dict(torch.load(args.init_path), strict=False)
     student_model.to(device)
     if args.do_eval:
         logger.info("***** Running evaluation *****")
@@ -954,6 +954,7 @@ def main():
             tr_att_loss = 0.
             tr_rep_loss = 0.
             tr_cls_loss = 0.
+            tr_val_loss = 0.
 
             student_model.train()
             nb_tr_examples, nb_tr_steps = 0, 0
@@ -968,11 +969,7 @@ def main():
 
                 
 
-                student_logits, student_atts, student_reps = student_model(input_ids, segment_ids, input_mask,
-                                                                           is_student=True)
 
-                with torch.no_grad():
-                    teacher_logits, teacher_atts, teacher_reps = teacher_model(input_ids, segment_ids, input_mask)
 
                 if not args.pred_distill:
                     # att_loss = 0.
@@ -998,20 +995,38 @@ def main():
                     # for student_rep, teacher_rep in zip(new_student_reps, new_teacher_reps):
                     #     tmp_loss = loss_mse(student_rep, teacher_rep)
                     #     rep_loss += tmp_loss
+
                     if args.feature_learn == 'att_mse_hidden_mse':
+                        student_logits, student_atts, student_reps = student_model(input_ids, segment_ids, input_mask,
+                                                                           is_student=True)
+
+                        with torch.no_grad():
+                            teacher_logits, teacher_atts, teacher_reps = teacher_model(input_ids, segment_ids, input_mask)
                         rep_loss, att_loss = att_mse_hidden_mse(student_atts, teacher_atts, student_reps, teacher_reps, device)
-                    
+                        loss = rep_loss + att_loss
+                   
                     if args.feature_learn == 'att_kl':
                         rep_loss, att_loss = att_kl(student_atts, teacher_atts)
+                        loss = rep_loss + att_loss
                     if args.feature_learn == 'att_kl_4from6':
                         rep_loss, att_loss = att_kl_4_from_6(student_atts, teacher_atts, args.layer_selection)
-                    loss = rep_loss + att_loss
+                        loss = rep_loss + att_loss
+                    if args.feature_learn == 'attn_kl_val_kl':
+                        rep_loss = torch.tensor(0.)
+                        student_logits, student_atts_val, student_reps = student_model(input_ids, segment_ids, input_mask, output_val=True, is_student=True)
+                        with torch.no_grad():
+                            teacher_logits,  teacher_atts_val, teacher_reps = teacher_model(input_ids, segment_ids, input_mask, output_val=True)
+                        att_loss, value_loss = att_val_kl(student_atts_val, teacher_atts_val, device)
+                        loss = att_loss + rep_loss + value_loss
+                    
+                    tr_val_loss += value_loss.item()
                     tr_att_loss += att_loss.item()
                     tr_rep_loss += rep_loss.item()
 
                     clearml_logger.report_scalar("loss", "loss", iteration=global_step ,value=loss)
                     clearml_logger.report_scalar("loss", "loss_attn", iteration=global_step ,value=att_loss)
                     clearml_logger.report_scalar("loss", "loss_rep", iteration=global_step ,value=rep_loss)
+                    clearml_logger.report_scalar("loss", "loss_val", iteration=global_step ,value=value_loss)
 
 
                 else:
@@ -1061,6 +1076,7 @@ def main():
                     cls_loss = tr_cls_loss / (step + 1)
                     att_loss = tr_att_loss / (step + 1)
                     rep_loss = tr_rep_loss / (step + 1)
+                    val_loss = tr_val_loss / (step + 1)
 
 
 
@@ -1095,13 +1111,15 @@ def main():
                     result['cls_loss'] = cls_loss
                     result['att_loss'] = att_loss
                     result['rep_loss'] = rep_loss
+                    result['val_loss'] = val_loss
                     result['loss'] = loss
 
                     clearml_logger.report_scalar("loss", "train: loss", iteration=global_step ,value=loss)
                     clearml_logger.report_scalar("loss", "train: loss_attn", iteration=global_step ,value=att_loss)
                     clearml_logger.report_scalar("loss", "train: loss_rep", iteration=global_step ,value=rep_loss)
                     clearml_logger.report_scalar("loss", "train: loss_ce", iteration=global_step ,value=cls_loss)
-
+                    clearml_logger.report_scalar("loss", "train: loss_val", iteration=global_step ,value=val_loss)
+                    
                     result_to_file(result, output_eval_file)
 
                     if not args.pred_distill:
