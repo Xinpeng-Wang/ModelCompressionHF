@@ -1136,10 +1136,10 @@ class TinyBertForSequenceClassification(BertPreTrainedModel):
         self.apply(self.init_bert_weights)
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None,
-                labels=None, is_student=False):
+                labels=None, is_student=False, output_val=False):
 
         sequence_output, att_output, pooled_output = self.bert(input_ids, token_type_ids, attention_mask,
-                                                               output_all_encoded_layers=True, output_att=True)
+                                                               output_val=output_val, output_all_encoded_layers=True, output_att=True)
 
         logits = self.classifier(torch.relu(pooled_output))
 
