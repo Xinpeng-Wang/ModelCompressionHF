@@ -44,7 +44,10 @@ from transformer.file_utils import WEIGHTS_NAME, CONFIG_NAME
 from clearml import Task, Logger
 import argparse
 from methods.feature_distill import att_mse_hidden_mse, att_kl, att_kl_4_from_6, att_val_kl
-
+import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 
 
@@ -74,6 +77,20 @@ try:
 except:
     oncloud = False
 
+def setup(rank, world_size):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+def prepare(dataset, rank, world_size, batch_size=32, pin_memory=False, num_workers=0):
+    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False)
+    
+    dataloader = DataLoader(dataset, batch_size=batch_size, pin_memory=pin_memory, num_workers=num_workers, drop_last=False, shuffle=False, sampler=sampler)
+    
+    return dataloader
+
+def cleanup():
+    dist.destroy_process_group()
 
 class InputExample(object):
     """A single training/test example for simple sequence classification."""
@@ -662,7 +679,7 @@ def do_eval(model, task_name, eval_dataloader,
     return result
 
 
-def main():
+def main(rank, world_size):
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_dir",
                         default=None,
@@ -819,8 +836,12 @@ def main():
     corr_tasks = ["sts-b"]
     mcc_tasks = ["cola"]
 
+    # DDP setup
+    setup(rank, world_size)
+
     # Prepare devices
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    # device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    device = torch.device("cuda", rank)
     n_gpu = torch.cuda.device_count()
 
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -878,24 +899,28 @@ def main():
         train_features = convert_examples_to_features(train_examples, label_list,
                                                       args.max_seq_length, tokenizer, output_mode)
         train_data, _ = get_tensor_data(output_mode, train_features)
-        train_sampler = RandomSampler(train_data)
-        train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
+        # train_sampler = RandomSampler(train_data)
+        train_dataloader = prepare(train_data, rank=rank, world_size=world_size, batch_size=args.train_batch_size)
+
+        # train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size)
 
     eval_examples = processor.get_dev_examples(args.data_dir)
     eval_features = convert_examples_to_features(eval_examples, label_list, args.max_seq_length, tokenizer, output_mode)
     eval_data, eval_labels = get_tensor_data(output_mode, eval_features)
-    eval_sampler = SequentialSampler(eval_data)
-    eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+    # eval_sampler = SequentialSampler(eval_data)
+    eval_dataloader = prepare(eval_data, rank=rank, world_size=world_size, batch_size=args.eval_batch_size)
+
+    # eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
     if not args.do_eval:
         teacher_model = TinyBertForSequenceClassification.from_pretrained(args.teacher_model, num_labels=num_labels)
-        teacher_model.to(device)
+        teacher_model.to(rank)
     if args.initialize_from == 'general_distilled_student' or args.pred_distill is True:
         student_model = TinyBertForSequenceClassification.from_pretrained(args.student_model, num_labels=num_labels)
     elif args.initialize_from == 'finetuned_teacher':
         student_model = TinyBertForSequenceClassification.from_scratch(args.student_model, num_labels=num_labels)
         student_model.load_state_dict(torch.load(args.init_path), strict=False)
-    student_model.to(device)
+    student_model.to(rank)
     if args.do_eval:
         logger.info("***** Running evaluation *****")
         logger.info("  Num examples = %d", len(eval_examples))
@@ -913,8 +938,11 @@ def main():
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_optimization_steps)
         if n_gpu > 1:
-            student_model = torch.nn.DataParallel(student_model)
-            teacher_model = torch.nn.DataParallel(teacher_model)
+            # student_model = torch.nn.DataParallel(student_model)
+            # teacher_model = torch.nn.DataParallel(teacher_model)
+            student_model = DDP(student_model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
+            teacher_model = DDP(teacher_model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
+
         # Prepare optimizer
         param_optimizer = list(student_model.named_parameters())
         size = 0
@@ -958,6 +986,9 @@ def main():
 
             student_model.train()
             nb_tr_examples, nb_tr_steps = 0, 0
+
+            train_dataloader.sampler.set_epoch(epoch_)
+            eval_dataloader.sampler.set_epoch(epoch_)
 
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration", ascii=True)):
                 batch = tuple(t.to(device) for t in batch)
@@ -1174,10 +1205,12 @@ def main():
                             logger.info("  Num examples = %d", len(eval_examples))
                             logger.info("  Batch size = %d", args.eval_batch_size)
 
-                            eval_sampler = SequentialSampler(eval_data)
-                            eval_dataloader = DataLoader(eval_data, sampler=eval_sampler,
-                                                         batch_size=args.eval_batch_size)
+                            # eval_sampler = SequentialSampler(eval_data)
+                            # eval_sampler = DistributedSampler(eval_data, num_replicas=world_size)
+                            # eval_dataloader = DataLoader(eval_data, sampler=eval_sampler,
+                            #                              batch_size=args.eval_batch_size)
 
+                            eval_dataloader = prepare(eval_data, rank, world_size=world_size, batch_size=args.batch_size)
                             result = do_eval(student_model, task_name, eval_dataloader,
                                              device, output_mode, eval_labels, num_labels)
 
@@ -1195,7 +1228,12 @@ def main():
                             mox.file.copy_parallel('.', args.data_url)
 
                     student_model.train()
-
+    cleanup()
 
 if __name__ == "__main__":
-    main()
+    world_size = 2
+    mp.spawn(
+        main,
+        args=(world_size,),
+        nprocs=world_size
+    )
