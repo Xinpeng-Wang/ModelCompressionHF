@@ -764,7 +764,7 @@ def main(rank, world_size):
                         action='store_true')
     parser.add_argument('--eval_step',
                         type=int,
-                        default=50)
+                        default=100)
     parser.add_argument('--pred_distill',
                         action='store_true')
     parser.add_argument('--data_url',
@@ -779,8 +779,9 @@ def main(rank, world_size):
                         type=str,
                         default='att_mse_hidden_mse')
     parser.add_argument('--layer_selection',
-                        type=int,
-                        default=None
+                        type=lambda s: [int(item) for item in s.split(',')],
+                        default=None,
+                        help="the layer of teacher to learn from"
                         )
     parser.add_argument('--initialize_from',
                         type=str,
@@ -1047,7 +1048,7 @@ def main(rank, world_size):
                         student_logits, student_atts_val, student_reps = student_model(input_ids, segment_ids, input_mask, output_val=True, is_student=True)
                         with torch.no_grad():
                             teacher_logits,  teacher_atts_val, teacher_reps = teacher_model(input_ids, segment_ids, input_mask, output_val=True)
-                        att_loss, value_loss = att_val_kl(student_atts_val, teacher_atts_val, device)
+                        att_loss, value_loss = att_val_kl(student_atts_val, teacher_atts_val, device, args.layer_selection)
                         loss = att_loss + rep_loss + value_loss
                     
                     tr_val_loss += value_loss.item()
@@ -1231,7 +1232,7 @@ def main(rank, world_size):
     cleanup()
 
 if __name__ == "__main__":
-    world_size = 2
+    world_size = 8
     mp.spawn(
         main,
         args=(world_size,),
