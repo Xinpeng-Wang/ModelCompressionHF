@@ -908,10 +908,10 @@ def main(rank, world_size):
     eval_examples = processor.get_dev_examples(args.data_dir)
     eval_features = convert_examples_to_features(eval_examples, label_list, args.max_seq_length, tokenizer, output_mode)
     eval_data, eval_labels = get_tensor_data(output_mode, eval_features)
-    # eval_sampler = SequentialSampler(eval_data)
-    eval_dataloader = prepare(eval_data, rank=rank, world_size=world_size, batch_size=args.eval_batch_size)
+    eval_sampler = SequentialSampler(eval_data)
+    # eval_dataloader = prepare(eval_data, rank=rank, world_size=world_size, batch_size=args.eval_batch_size)
 
-    # eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
+    eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
     if not args.do_eval:
         teacher_model = TinyBertForSequenceClassification.from_pretrained(args.teacher_model, num_labels=num_labels)
@@ -922,7 +922,7 @@ def main(rank, world_size):
         student_model = TinyBertForSequenceClassification.from_scratch(args.student_model, num_labels=num_labels)
         student_model.load_state_dict(torch.load(args.init_path), strict=False)
     student_model.to(rank)
-    if args.do_eval:
+    if args.do_eval and rank == 0:
         logger.info("***** Running evaluation *****")
         logger.info("  Num examples = %d", len(eval_examples))
         logger.info("  Batch size = %d", args.eval_batch_size)
@@ -942,7 +942,7 @@ def main(rank, world_size):
             # student_model = torch.nn.DataParallel(student_model)
             # teacher_model = torch.nn.DataParallel(teacher_model)
             student_model = DDP(student_model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
-            teacher_model = DDP(teacher_model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
+            # teacher_model = DDP(teacher_model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
 
         # Prepare optimizer
         param_optimizer = list(student_model.named_parameters())
@@ -989,7 +989,7 @@ def main(rank, world_size):
             nb_tr_examples, nb_tr_steps = 0, 0
 
             train_dataloader.sampler.set_epoch(epoch_)
-            eval_dataloader.sampler.set_epoch(epoch_)
+            # eval_dataloader.sampler.set_epoch(epoch_)
 
             for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration", ascii=True)):
                 batch = tuple(t.to(device) for t in batch)
@@ -997,10 +997,6 @@ def main(rank, world_size):
                 input_ids, input_mask, segment_ids, label_ids, seq_lengths = batch
                 if input_ids.size()[0] != args.train_batch_size:
                     continue
-
-
-                
-
 
 
                 if not args.pred_distill:
@@ -1062,6 +1058,9 @@ def main(rank, world_size):
 
 
                 else:
+                    student_logits, student_atts_val, student_reps = student_model(input_ids, segment_ids, input_mask, output_val=True, is_student=True)
+                    with torch.no_grad():
+                        teacher_logits,  teacher_atts_val, teacher_reps = teacher_model(input_ids, segment_ids, input_mask, output_val=True)
                     # cls_loss = 0.
                     if output_mode == "classification":
                         cls_loss = soft_cross_entropy(student_logits / args.temperature,
@@ -1096,7 +1095,7 @@ def main(rank, world_size):
                     optimizer.zero_grad()
                     global_step += 1
 
-                if (global_step + 1) % args.eval_step == 0:
+                if (global_step + 1) % args.eval_step == 0  and rank == 0:
                     logger.info("***** Running evaluation *****")
                     logger.info("  Epoch = {} iter {} step".format(epoch_, global_step))
                     logger.info("  Num examples = %d", len(eval_examples))
@@ -1206,12 +1205,12 @@ def main(rank, world_size):
                             logger.info("  Num examples = %d", len(eval_examples))
                             logger.info("  Batch size = %d", args.eval_batch_size)
 
-                            # eval_sampler = SequentialSampler(eval_data)
+                            eval_sampler = SequentialSampler(eval_data)
                             # eval_sampler = DistributedSampler(eval_data, num_replicas=world_size)
-                            # eval_dataloader = DataLoader(eval_data, sampler=eval_sampler,
-                            #                              batch_size=args.eval_batch_size)
+                            eval_dataloader = DataLoader(eval_data, sampler=eval_sampler,
+                                                         batch_size=args.eval_batch_size)
 
-                            eval_dataloader = prepare(eval_data, rank, world_size=world_size, batch_size=args.batch_size)
+                            # eval_dataloader = prepare(eval_data, rank, world_size=world_size, batch_size=args.batch_size)
                             result = do_eval(student_model, task_name, eval_dataloader,
                                              device, output_mode, eval_labels, num_labels)
 
