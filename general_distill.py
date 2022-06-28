@@ -43,7 +43,11 @@ from transformer.tokenization import BertTokenizer
 from transformer.optimization import BertAdam
 from methods.feature_distill import att_mse_hidden_mse, att_val_kl
 from clearml import Task, Logger
-
+import torch.distributed as dist
+from torch.utils.data.distributed import DistributedSampler
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+import socket
 
 parser = argparse.ArgumentParser(add_help=False)
 parser.add_argument('--run-name')
@@ -79,6 +83,36 @@ logger = logging.getLogger(__name__)
 
 
 InputFeatures = namedtuple("InputFeatures", "input_ids input_mask segment_ids lm_label_ids is_next")
+
+def find_free_network_port() -> int:
+    """Finds a free port on localhost.
+
+    It is useful in single-node training when we don't want to connect to a real main node but have to set the
+    `MASTER_PORT` environment variable.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("", 0))
+    s.listen(1)
+    port = s.getsockname()[1]
+    s.close()
+    return port
+
+free_port = find_free_network_port()
+
+def setup(rank, world_size, free_port):
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'#str(free_port)
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+def prepare(dataset, rank, world_size, batch_size=32, pin_memory=False, num_workers=0):
+    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False)
+    
+    dataloader = DataLoader(dataset, batch_size=batch_size, pin_memory=pin_memory, num_workers=num_workers, drop_last=False, shuffle=False, sampler=sampler)
+    
+    return dataloader
+
+def cleanup():
+    dist.destroy_process_group()
 
 
 def convert_example_to_features(example, tokenizer, max_seq_length):
@@ -135,38 +169,45 @@ class PregeneratedDataset(Dataset):
         logger.info('metrics_file: {}'.format(metrics_file))
 
         assert data_file.is_file() and metrics_file.is_file()
+        # ; pdb.set_trace() 
+
         metrics = json.loads(metrics_file.read_text())
         num_samples = metrics['num_training_examples']
         seq_len = metrics['max_seq_len']
         self.temp_dir = None
-        self.working_dir = None
+        # self.working_dir = None
+
         if reduce_memory:
-            self.temp_dir = TemporaryDirectory()
-            # import pdb; pdb.set_trace() 
+            # self.temp_dir = TemporaryDirectory()
             # self.working_dir = Path('/cache'
-            self.working_dir = Path(self.temp_dir.name)
-            input_ids = np.memmap(filename=self.working_dir/'input_ids.memmap',
+
+            # self.working_dir = Path(self.temp_dir.name)
+            input_ids = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/'input_ids.memmap',
                                   mode='w+', dtype=np.int32, shape=(num_samples, seq_len))
-            input_masks = np.memmap(filename=self.working_dir/'input_masks.memmap',
-                                    shape=(num_samples, seq_len), mode='w+', dtype=np.bool)
-            segment_ids = np.memmap(filename=self.working_dir/'segment_ids.memmap',
-                                    shape=(num_samples, seq_len), mode='w+', dtype=np.bool)
-            lm_label_ids = np.memmap(filename=self.working_dir/'lm_label_ids.memmap',
-                                     shape=(num_samples, seq_len), mode='w+', dtype=np.int32)
+
+            input_masks = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/'input_masks.memmap',
+                                    shape=(num_samples, seq_len), mode='r+', dtype=bool)
+            segment_ids = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/'segment_ids.memmap',
+                                    shape=(num_samples, seq_len), mode='r+', dtype=bool)
+
+            lm_label_ids = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/'lm_label_ids.memmap',
+                                     shape=(num_samples, seq_len), mode='r+', dtype=np.int32)
+
             lm_label_ids[:] = -1
-            is_nexts = np.memmap(filename=self.working_dir/'is_nexts.memmap',
-                                 shape=(num_samples,), mode='w+', dtype=np.bool)
+            is_nexts = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/'is_nexts.memmap',
+                                 shape=(num_samples,), mode='r+', dtype=bool)
+            
         else:
             input_ids = np.zeros(shape=(num_samples, seq_len), dtype=np.int32)
-            input_masks = np.zeros(shape=(num_samples, seq_len), dtype=np.bool)
-            segment_ids = np.zeros(shape=(num_samples, seq_len), dtype=np.bool)
+            input_masks = np.zeros(shape=(num_samples, seq_len), dtype=bool)
+            segment_ids = np.zeros(shape=(num_samples, seq_len), dtype=bool)
             lm_label_ids = np.full(shape=(num_samples, seq_len), dtype=np.int32, fill_value=-1)
-            is_nexts = np.zeros(shape=(num_samples,), dtype=np.bool)
+            is_nexts = np.zeros(shape=(num_samples,), dtype=bool)
 
         logging.info("Loading training examples for epoch {}".format(epoch))
 
         with data_file.open() as f:
-            for i, line in enumerate(tqdm(f, total=num_samples, desc="Training examples")):
+            for i, line in enumerate(tqdm(f, total=num_samples, desc="Training examples")): 
                 line = line.strip()
                 example = json.loads(line)
                 features = convert_example_to_features(example, tokenizer, seq_len)
@@ -197,7 +238,10 @@ class PregeneratedDataset(Dataset):
                 torch.tensor(int(self.is_nexts[item])))
 
 
-def main():
+def main(rank, world_size):
+# def main():
+#     rank=0
+#     world_size=1
     parser = argparse.ArgumentParser()
 
     # Required parameters
@@ -281,6 +325,10 @@ def main():
     parser.add_argument('--continue_train',
                         action='store_true',
                         help='Whether to train from checkpoints')
+    parser.add_argument('--distributed_training',
+                        action='store_true',
+                        help='Whether to use DDP'
+                         )
 
     # Additional arguments
     parser.add_argument('--eval_step',
@@ -317,22 +365,27 @@ def main():
     else:
         num_data_epochs = args.num_train_epochs
 
-    if args.local_rank == -1 or args.no_cuda:
+
+
+    if args.no_cuda or args.distributed_training is None: #args.local_rank == -1 or 
         device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
         n_gpu = torch.cuda.device_count()
     else:
-        torch.cuda.set_device(args.local_rank)
-        device = torch.device("cuda", args.local_rank)
+        torch.cuda.set_device(rank)
+        device = torch.device("cuda", rank)
         n_gpu = 1
         # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-        torch.distributed.init_process_group(backend='nccl')
+        setup(rank, world_size, free_port)
+
+
+
 
     logging.basicConfig(format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                         datefmt='%m/%d/%Y %H:%M:%S',
                         level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN)
 
     logger.info("device: {} n_gpu: {}, distributed training: {}, 16-bits training: {}".format(
-        device, n_gpu, bool(args.local_rank != -1), args.fp16))
+        device, n_gpu, args.distributed_training, args.fp16))
 
     if args.gradient_accumulation_steps < 1:
         raise ValueError("Invalid gradient_accumulation_steps parameter: {}, should be >= 1".format(
@@ -351,6 +404,9 @@ def main():
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
+
+
+
     tokenizer = BertTokenizer.from_pretrained(args.teacher_model, do_lower_case=args.do_lower_case)
 
     total_train_examples = 0
@@ -360,7 +416,8 @@ def main():
 
     num_train_optimization_steps = int(
         total_train_examples / args.train_batch_size / args.gradient_accumulation_steps)
-    if args.local_rank != -1:
+    # if args.local_rank != -1:
+    if args.distributed_training:
         num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size()
 
     if args.continue_train:
@@ -373,14 +430,15 @@ def main():
     student_model.to(device)
     teacher_model.to(device)
 
-    if args.local_rank != -1:
-        try:
-            from apex.parallel import DistributedDataParallel as DDP
-        except ImportError:
-            raise ImportError(
-                "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
+    if args.distributed_training:
+        # try:
+        #     from apex.parallel import DistributedDataParallel as DDP
+        # except ImportError:
+        #     raise ImportError(
+        #         "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
 
         teacher_model = DDP(teacher_model)
+        student_model = DDP(student_model)
     elif n_gpu > 1:
         student_model = torch.nn.DataParallel(student_model)
         teacher_model = torch.nn.DataParallel(teacher_model)
@@ -416,11 +474,13 @@ def main():
     for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
         epoch_dataset = PregeneratedDataset(epoch=epoch, training_path=args.pregenerated_data, tokenizer=tokenizer,
                                             num_data_epochs=num_data_epochs, reduce_memory=args.reduce_memory)
-        if args.local_rank == -1:
+        # if args.local_rank == -1:
+        if args.distributed_training is None:
             train_sampler = RandomSampler(epoch_dataset)
         else:
             train_sampler = DistributedSampler(epoch_dataset)
-        train_dataloader = DataLoader(epoch_dataset, sampler=train_sampler, batch_size=args.train_batch_size)
+            # train_sampler = DistributedSampler(epoch_dataset, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False )
+        train_dataloader = DataLoader(epoch_dataset, sampler=train_sampler, batch_size=args.train_batch_size)#, pin_memory=False, num_workers=0, drop_last=False, shuffle=False,)
 
         tr_loss = 0.
         tr_att_loss = 0.
@@ -562,12 +622,14 @@ def main():
             model_to_save.config.to_json_file(output_config_file)
             tokenizer.save_vocabulary(args.output_dir)
 
-            if oncloud:
-                logging.info(mox.file.list_directory(args.output_dir, recursive=True))
-                logging.info(mox.file.list_directory('.', recursive=True))
-                mox.file.copy_parallel(args.output_dir, args.data_url)
-                mox.file.copy_parallel('.', args.data_url)
 
 
 if __name__ == "__main__":
-    main()
+    world_size = 8
+    mp.spawn(
+        main,
+        args=(world_size,),
+        nprocs=world_size
+    )
+    # main()
+
