@@ -84,10 +84,8 @@ def att_kl_4_from_6(student_atts, teacher_atts, layer_selection):
     # new_teacher_atts = [teacher_atts[i * layers_per_block + layers_per_block - 1]
     #                     for i in range(student_layer_num)]
     
-    new_teacher_atts = []
-    if layer_selection == 1234:
-        for i in [1,2,3,4]:   
-            new_teacher_atts.append(teacher_atts[i])
+    new_teacher_atts = [teacher_atts[i] for i in layer_selection]
+
 
     # new_teacher_atts = 
 
@@ -104,7 +102,7 @@ def att_kl_4_from_6(student_atts, teacher_atts, layer_selection):
 
     
 
-def att_val_kl(student_atts_val, teacher_atts_val, device):
+def att_val_kl(student_atts_val, teacher_atts_val, device, layer_selection):
     attn_student = [attn[0] for attn in student_atts_val]
             # len(attn_teacher) = 12
     attn_teacher = [attn[0] for attn in teacher_atts_val]
@@ -121,9 +119,9 @@ def att_val_kl(student_atts_val, teacher_atts_val, device):
 
     # 能整除的情况下 
 
-    new_teacher_atts = [attn_teacher[i * layers_per_block + layers_per_block - 1]
-                                for i in range(student_layer_num)]
-
+    # new_teacher_atts = [attn_teacher[i * layers_per_block + layers_per_block - 1]
+    #                             for i in range(student_layer_num)]
+    new_teacher_atts = [attn_teacher[i] for i in layer_selection]
 
     loss_att = 0.
     loss_value = 0.
