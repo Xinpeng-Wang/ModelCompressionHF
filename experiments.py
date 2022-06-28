@@ -73,10 +73,10 @@ specific_config_format = {
         "--task_name": "qnli",
         # "--output_dir": "models/students/qnli",
         "--max_seq_length": 128,
-        "--train_batch_size": 32,
+        "--train_batch_size": 32,#128,
         "--num_train_epochs": 10,
         "--do_lower_case": None,
-        "--layer_selection": 1234
+        "--layer_selection": '1, 3, 5, 7, 9, 11'
         }
 
 
@@ -294,7 +294,8 @@ def task_specific_two_stage_training(task, method, student_layer):
     config_inter['--teacher_model'] = task_param[task]['teacher']
     config_inter['--data_dir'] = task_param[task]['data']
     config_inter['--initialize_from'] = 'finetuned_teacher'
-    selection_list = [1, 3, 5, 7, 9, 11]
+    selection_list = [int(item) for item in config_inter['--layer_selection'].split(',')]
+
     config_inter['--init_path'] = layer_weight_selection(config_inter['--teacher_model'], task, selection_list)
 
     # train
