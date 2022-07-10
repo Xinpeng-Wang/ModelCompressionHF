@@ -127,6 +127,10 @@ def att_val_kl(student_atts_val, teacher_atts_val, device, layer_selection):
     loss_value = 0.
 
     for student_att, teacher_att in zip(attn_student, new_teacher_atts):
+        student_att = torch.where(student_att <= -1e2, torch.zeros_like(student_att).to(device),
+                                      student_att)
+        teacher_att = torch.where(teacher_att <= -1e2, torch.zeros_like(teacher_att).to(device),
+                                      teacher_att)
         student_att = F.log_softmax(student_att, dim=-1)
         teacher_att = F.softmax(teacher_att, dim=-1)
         # batch_size, head_num, lenght = student_att.shape[0], student_att.shape[1], student_att.shape[2]
