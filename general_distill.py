@@ -156,7 +156,7 @@ def convert_example_to_features(example, tokenizer, max_seq_length):
 
 
 class PregeneratedDataset(Dataset):
-    def __init__(self, training_path, epoch, tokenizer, num_data_epochs, reduce_memory=False):
+    def __init__(self, training_path, epoch, tokenizer, num_data_epochs, rank, reduce_memory=False):
         self.vocab = tokenizer.vocab
         self.tokenizer = tokenizer
         self.epoch = epoch
@@ -182,20 +182,20 @@ class PregeneratedDataset(Dataset):
             # self.working_dir = Path('/cache'
 
             # self.working_dir = Path(self.temp_dir.name)
-            input_ids = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/'input_ids.memmap',
+            input_ids = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/f'{rank}'/'input_ids.memmap',
                                   mode='w+', dtype=np.int32, shape=(num_samples, seq_len))
 
-            input_masks = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/'input_masks.memmap',
-                                    shape=(num_samples, seq_len), mode='r+', dtype=bool)
-            segment_ids = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/'segment_ids.memmap',
-                                    shape=(num_samples, seq_len), mode='r+', dtype=bool)
+            input_masks = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/f'{rank}'/'input_masks.memmap',
+                                    shape=(num_samples, seq_len), mode='w+', dtype=bool)
+            segment_ids = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/f'{rank}'/'segment_ids.memmap',
+                                    shape=(num_samples, seq_len), mode='w+', dtype=bool)
 
-            lm_label_ids = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/'lm_label_ids.memmap',
-                                     shape=(num_samples, seq_len), mode='r+', dtype=np.int32)
+            lm_label_ids = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/f'{rank}'/'lm_label_ids.memmap',
+                                     shape=(num_samples, seq_len), mode='w+', dtype=np.int32)
 
             lm_label_ids[:] = -1
-            is_nexts = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/'is_nexts.memmap',
-                                 shape=(num_samples,), mode='r+', dtype=bool)
+            is_nexts = np.memmap(filename=Path('/mounts/data/proj/xinpeng/tmp')/f'{rank}'/'is_nexts.memmap',
+                                 shape=(num_samples,), mode='w+', dtype=bool)
             
         else:
             input_ids = np.zeros(shape=(num_samples, seq_len), dtype=np.int32)
@@ -339,6 +339,12 @@ def main(rank, world_size):
     parser.add_argument('--data_url',
                         type=str,
                         default="")
+
+    parser.add_argument('--layer_selection',
+                    type=lambda s: [int(item) for item in s.split(',')],
+                    default=None,
+                    help="the layer of teacher to learn from"
+                    )
     
     parser.add_argument(
         '--feature_learn',
@@ -437,8 +443,8 @@ def main(rank, world_size):
         #     raise ImportError(
         #         "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training.")
 
-        teacher_model = DDP(teacher_model)
-        student_model = DDP(student_model)
+        # teacher_model = DDP(teacher_model)
+        student_model = DDP(student_model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
     elif n_gpu > 1:
         student_model = torch.nn.DataParallel(student_model)
         teacher_model = torch.nn.DataParallel(teacher_model)
@@ -473,7 +479,7 @@ def main(rank, world_size):
 
     for epoch in trange(int(args.num_train_epochs), desc="Epoch"):
         epoch_dataset = PregeneratedDataset(epoch=epoch, training_path=args.pregenerated_data, tokenizer=tokenizer,
-                                            num_data_epochs=num_data_epochs, reduce_memory=args.reduce_memory)
+                                            num_data_epochs=num_data_epochs, rank=rank, reduce_memory=args.reduce_memory)
         # if args.local_rank == -1:
         if args.distributed_training is None:
             train_sampler = RandomSampler(epoch_dataset)
@@ -481,6 +487,7 @@ def main(rank, world_size):
             train_sampler = DistributedSampler(epoch_dataset)
             # train_sampler = DistributedSampler(epoch_dataset, num_replicas=world_size, rank=rank, shuffle=False, drop_last=False )
         train_dataloader = DataLoader(epoch_dataset, sampler=train_sampler, batch_size=args.train_batch_size)#, pin_memory=False, num_workers=0, drop_last=False, shuffle=False,)
+        # train_dataloader.sampler.set_epoch(epoch)
 
         tr_loss = 0.
         tr_att_loss = 0.
@@ -535,7 +542,7 @@ def main(rank, world_size):
                     rep_loss = torch.tensor(0.)
                     student_atts_val, student_reps = student_model(input_ids, segment_ids, input_mask, output_val=True)
                     teacher_reps, teacher_atts_val, _ = teacher_model(input_ids, segment_ids, input_mask, output_val=True)
-                    att_loss, value_loss = att_val_kl(student_atts_val, teacher_atts_val, device)
+                    att_loss, value_loss = att_val_kl(student_atts_val, teacher_atts_val, device, args.layer_selection)
                     loss = att_loss + rep_loss + value_loss
 
 
@@ -605,11 +612,7 @@ def main(rank, world_size):
                         model_to_save.config.to_json_file(output_config_file)
                         tokenizer.save_vocabulary(args.output_dir)
 
-                        if oncloud:
-                            logging.info(mox.file.list_directory(args.output_dir, recursive=True))
-                            logging.info(mox.file.list_directory('.', recursive=True))
-                            mox.file.copy_parallel(args.output_dir, args.data_url)
-                            mox.file.copy_parallel('.', args.data_url)
+    
 
             model_name = "step_{}_{}".format(global_step, WEIGHTS_NAME)
             logging.info("** ** * Saving fine-tuned model ** ** * ")
@@ -621,7 +624,7 @@ def main(rank, world_size):
             torch.save(model_to_save.state_dict(), output_model_file)
             model_to_save.config.to_json_file(output_config_file)
             tokenizer.save_vocabulary(args.output_dir)
-
+    cleanup()
 
 
 if __name__ == "__main__":
